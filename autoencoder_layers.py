@@ -1,6 +1,6 @@
 import theano
 from keras import backend as K
-from keras.backend.theano_backend import _on_gpu
+#from keras.backend.theano_backend import _on_gpu
 from keras.layers.convolutional import Convolution2D, UpSampling2D
 from keras.layers.core import Dense, Layer
 from theano import tensor as T
@@ -46,42 +46,63 @@ class DePool2D(UpSampling2D):
 
     def __init__(self, pool2d_layer, *args, **kwargs):
         self._pool2d_layer = pool2d_layer
-        super().__init__(*args, **kwargs)
+        super(DePool2D, self).__init__(*args, **kwargs)
 
-    def get_output(self, train=False):
-        X = self.get_input(train)
-        if self.dim_ordering == 'th':
+    def call(self, inputs):
+        X = inputs
+        if self.data_format == 'channels_first':
+#            print('DePool2D: th')
             output = K.repeat_elements(X, self.size[0], axis=2)
             output = K.repeat_elements(output, self.size[1], axis=3)
-        elif self.dim_ordering == 'tf':
-            output = K.repeat_elements(X, self.size[0], axis=1)
-            output = K.repeat_elements(output, self.size[1], axis=2)
+        elif self.data_format == 'channels_last':
+#            print('DePool2D: tf')
+            output = K.repeat_elements(X, self.size[0], axis=2)
+            output = K.repeat_elements(output, self.size[1], axis=3)
+            output = K.permute_dimensions(output, (0, 2, 3, 1))
         else:
             raise Exception('Invalid dim_ordering: ' + self.dim_ordering)
 
-        f = T.grad(T.sum(self._pool2d_layer.get_output(train)), wrt=self._pool2d_layer.get_input(train)) * output
-
+        #f = T.grad(T.sum(self._pool2d_layer.get_activations(inputs)), wrt=self._pool2d_layer.call(inputs)) * output
+#        print("input -> " + str(X.shape))
+#        print("output -> " + str(output.shape))
+        f = K.gradients(loss=K.sum(self._pool2d_layer.output), variables=self._pool2d_layer.input) * output
+        f = K.squeeze(f, axis=0)
+        print(str(K.get_variable_shape(f)))
         return f
 
+    def compute_output_shape(self, input_shape):
+ #       print("input -> " + str(input_shape))
+ #       print("ups -> " + str(input_shape[2] * self.size[0]))
 
-def deconv2d_fast(x, kernel, strides=(1, 1), border_mode='valid', dim_ordering='th',
+        output_shape = (input_shape[0], input_shape[2] * self.size[0], input_shape[3] * self.size[1], input_shape[1])
+        print("depool out shape: " + str(output_shape))
+        self.output_dim = output_shape
+        return output_shape
+
+
+def deconv2d_fast(x, kernel, strides=(1, 1), border_mode='valid', data_format='channels_last',
                   image_shape=None, filter_shape=None):
     '''
     Run on cuDNN if available.
     border_mode: string, "same" or "valid".
     '''
-    if dim_ordering not in {'th', 'tf'}:
-        raise Exception('Unknown dim_ordering ' + str(dim_ordering))
-
-    if dim_ordering == 'tf':
+    if data_format not in {'channels_first', 'channels_last'}:
+        raise Exception('Unknown data_format ' + str(data_format))
+    #print("df: " + data_format)
+    if data_format == 'channels_last':
         # TF uses the last dimension as channel dimension,
         # instead of the 2nd one.
         # TH input shape: (samples, input_depth, rows, cols)
         # TF input shape: (samples, rows, cols, input_depth)
         # TH kernel shape: (depth, input_depth, rows, cols)
         # TF kernel shape: (rows, cols, input_depth, depth)
-        x = x.dimshuffle((0, 3, 1, 2))
-        kernel = kernel.dimshuffle((3, 2, 0, 1))
+        #x = x.dimshuffle((0, 3, 1, 2))
+        #print("X prior Shuffle " + str(x.shape))
+        x = K.permute_dimensions(x, (0, 1, 2, 3))
+        #kernel = kernel.dimshuffle((2, 3, 0, 1))
+        #print("K prior Shuffle " + str(kernel.shape))
+        kernel = K.permute_dimensions(kernel, (0, 1, 3, 2))
+
         if image_shape:
             image_shape = (image_shape[0], image_shape[3],
                            image_shape[1], image_shape[2])
@@ -89,24 +110,24 @@ def deconv2d_fast(x, kernel, strides=(1, 1), border_mode='valid', dim_ordering='
             filter_shape = (filter_shape[3], filter_shape[2],
                             filter_shape[0], filter_shape[1])
 
-    if _on_gpu() and dnn.dnn_available():
-        if border_mode == 'same':
-            assert (strides == (1, 1))
-            conv_out = dnn.dnn_conv(img=x,
-                                    kerns=kernel,
-                                    border_mode='full')
-            shift_x = (kernel.shape[2] - 1) // 2
-            shift_y = (kernel.shape[3] - 1) // 2
-            conv_out = conv_out[:, :,
-                       shift_x:x.shape[2] + shift_x,
-                       shift_y:x.shape[3] + shift_y]
-        else:
-            conv_out = dnn.dnn_conv(img=x,
-                                    conv_mode='cross',
-                                    kerns=kernel,
-                                    border_mode=border_mode,
-                                    subsample=strides)
-    else:
+    # if _on_gpu() and dnn.dnn_available():
+    #     if border_mode == 'same':
+    #         assert (strides == (1, 1))
+    #         conv_out = dnn.dnn_conv(img=x,
+    #                                 kerns=kernel,
+    #                                 border_mode='full')
+    #         shift_x = (kernel.shape[2] - 1) // 2
+    #         shift_y = (kernel.shape[3] - 1) // 2
+    #         conv_out = conv_out[:, :,
+    #                    shift_x:x.shape[2] + shift_x,
+    #                    shift_y:x.shape[3] + shift_y]
+    #     else:
+    #         conv_out = dnn.dnn_conv(img=x,
+    #                                 conv_mode='cross',
+    #                                 kerns=kernel,
+    #                                 border_mode=border_mode,
+    #                                 subsample=strides)
+    # else:
         if border_mode == 'same':
             th_border_mode = 'full'
             assert (strides == (1, 1))
@@ -115,20 +136,24 @@ def deconv2d_fast(x, kernel, strides=(1, 1), border_mode='valid', dim_ordering='
         else:
             raise Exception('Border mode not supported: ' + str(border_mode))
 
-        conv_out = T.nnet.conv2d(x, kernel,
-                                 border_mode=th_border_mode,
-                                 subsample=strides,
-                                 filter_flip=False,  # <<<<< IMPORTANT 111, dont flip kern
-                                 input_shape=image_shape,
-                                 filter_shape=filter_shape)
+        #conv_out = T.nnet.conv2d(x, kernel, 
+        #   border_mode=th_border_mode,
+        #   subsample=strides,
+        #   filter_flip=False,  # <<<<< IMPORTANT 111, dont flip kern
+        #   input_shape=image_shape,
+        #   filter_shape=filter_shape)
+        print(x.shape)
+        print(kernel.shape)
+        conv_out = K.conv2d(x, kernel, padding=border_mode, strides=strides, data_format=data_format)
         if border_mode == 'same':
             shift_x = (kernel.shape[2] - 1) // 2
             shift_y = (kernel.shape[3] - 1) // 2
             conv_out = conv_out[:, :,
-                       shift_x:x.shape[2] + shift_x,
-                       shift_y:x.shape[3] + shift_y]
-    if dim_ordering == 'tf':
-        conv_out = conv_out.dimshuffle((0, 2, 3, 1))
+            shift_x:x.shape[2] + shift_x,
+            shift_y:x.shape[3] + shift_y]
+    if data_format == 'channels_first':
+#        conv_out = conv_out.dimshuffle((0, 2, 3, 1))
+        conv_out = K.permute_dimensions(conv_out, (0, 2, 3, 1))
     return conv_out
 
 
@@ -188,68 +213,76 @@ class Deconvolution2D(Convolution2D):
     def __init__(self, binded_conv_layer, nb_out_channels=1, *args, **kwargs):
         self._binded_conv_layer = binded_conv_layer
         self.nb_out_channels = nb_out_channels
-        kwargs['nb_filter'] = self._binded_conv_layer.nb_filter
-        kwargs['nb_row'] = self._binded_conv_layer.nb_row
-        kwargs['nb_col'] = self._binded_conv_layer.nb_col
-        super().__init__(*args, **kwargs)
+        #self.output_dim = self._binded_conv_layer.output_dim
+        #print("input shape conv2d: I=" + str(self._binded_conv_layer.input_shape[2]))
+        kwargs['filters'] = self._binded_conv_layer.filters
+        kwargs['nb_row'] = self._binded_conv_layer.input_shape[1]
+        kwargs['nb_col'] = self._binded_conv_layer.input_shape[2]
+        super(Deconvolution2D, self).__init__(*args, **kwargs)
 
-    def build(self):
-        self.W = self._binded_conv_layer.W.dimshuffle((1, 0, 2, 3))
-        if self.dim_ordering == 'th':
-            self.W_shape = (self.nb_out_channels, self.nb_filter, self.nb_row, self.nb_col)
-        elif self.dim_ordering == 'tf':
-            raise NotImplementedError()
+
+    def build(self, input_shape):
+        print("data format: " + str(self._binded_conv_layer.data_format))
+        if self.data_format == 'channels_first':
+            channel_axis = 1
         else:
-            raise Exception('Invalid dim_ordering: ' + self.dim_ordering)
-
-        self.b = K.zeros((self.nb_out_channels,))
-        self.params = [self.b]
+            channel_axis = -1
+        if input_shape[channel_axis] is None:
+            raise ValueError('The channel dimension of the inputs '
+                             'should be defined. Found `None`.')
+        input_dim = input_shape[channel_axis]
+        print('input dim: ' + str(input_shape))
+        self.kernel_shape = self.kernel_size + (input_dim, self.filters)
+        self.bias = K.zeros((self.nb_out_channels,))
+        self.params = [self.bias]
         self.regularizers = []
+        self.kernel = K.permute_dimensions(self._binded_conv_layer.kernel, (1, 0, 2, 3))
 
-        if self.W_regularizer:
-            self.W_regularizer.set_param(self.W)
-            self.regularizers.append(self.W_regularizer)
 
-        if self.b_regularizer:
-            self.b_regularizer.set_param(self.b)
-            self.regularizers.append(self.b_regularizer)
+        if self.kernel_regularizer:
+            self.kernel_regularizer.set_param(self.kernel)
+            self.regularizers.append(self.kernel_regularizer)
+
+        if self.bias_regularizer:
+            self.bias_regularizer.set_param(self.bias)
+            self.regularizers.append(self.bias_regularizer)
 
         if self.activity_regularizer:
             self.activity_regularizer.set_layer(self)
             self.regularizers.append(self.activity_regularizer)
 
-        if self.initial_weights is not None:
-            self.set_weights(self.initial_weights)
-            del self.initial_weights
+#        if self.initial_weights is not None:
+#            self.set_weights(self.initial_weights)
+#            del self.initial_weights
 
-    @property
-    def output_shape(self):
-        output_shape = list(super().output_shape)
+    def compute_output_shape(self, input_shape):
+        print("deconv2d output shape")
+        output_shape = list(super(Deconvolution2D, self).compute_output_shape(input_shape))
 
-        if self.dim_ordering == 'th':
+        if self.data_format == 'channels_first':
             output_shape[1] = self.nb_out_channels
-        elif self.dim_ordering == 'tf':
-            output_shape[0] = self.nb_out_channels
+        elif self.data_format == 'channels_last':
+            output_shape[3] = self.nb_out_channels
         else:
-            raise Exception('Invalid dim_ordering: ' + self.dim_ordering)
+            raise Exception('Invalid data format: ' + self.data_format)
+        print("shapi: " + str(output_shape))
         return tuple(output_shape)
 
-    def get_output(self, train=False):
-        X = self.get_input(train)
-        conv_out = deconv2d_fast(X, self.W,
-                                 strides=self.subsample,
-                                 border_mode=self.border_mode,
-                                 dim_ordering=self.dim_ordering,
-                                 image_shape=self.input_shape,
-                                 filter_shape=self.W_shape)
-        if self.dim_ordering == 'th':
-            output = conv_out + K.reshape(self.b, (1, self.nb_out_channels, 1, 1))
-        elif self.dim_ordering == 'tf':
-            output = conv_out + K.reshape(self.b, (1, 1, 1, self.nb_out_channels))
+    def call(self, inputs):
+        X = inputs
+        conv_out = deconv2d_fast(X, self.kernel,
+                                 strides=self.strides,
+                                 border_mode=self.padding,
+                                 data_format=self.data_format,
+                                 image_shape=inputs.shape,
+                                 filter_shape=self.kernel_shape)
+        if self.data_format == 'channels_first':
+            output = conv_out + K.reshape(self.bias, (1, self.nb_out_channels, 1, 1))
+        elif self.data_format == 'channels_last':
+            output = conv_out + K.reshape(self.bias, (1, 1, 1, self.nb_out_channels))
         else:
             raise Exception('Invalid dim_ordering: ' + self.dim_ordering)
-
-        output = self.activation(output)
+        #output = self.activation(output)
         return output
 
     def get_config(self):
@@ -276,20 +309,35 @@ class DependentDense(Dense):
                  W_regularizer=None, b_regularizer=None, activity_regularizer=None,
                  W_constraint=None, b_constraint=None, input_dim=None, **kwargs):
         self.master_layer = master_layer
-        super().__init__(output_dim, **kwargs)
+        self.units = output_dim
+        self.initial_weights = weights
+        self.W_regularizer = W_regularizer
+        self.bias_regularizer = b_regularizer
+        self.kernel = K.transpose(self.master_layer.kernel)
+#        print("units: " + str(output_dim))
+        super(DependentDense, self).__init__(output_dim, **kwargs)
 
-    def build(self):
-        self.W = self.master_layer.W.T
-        self.b = K.zeros((self.output_dim,))
-        self.params = [self.b]
+    def build(self, input_shape):
+        #self.bias = K.zeros((self.master_layer.units,))
+        #print(self.master_layer.kernel.shape)
+        input_dim = input_shape[-1]
+#        print("units@build: " + str(self.units))
+#        print("kernel units@build: " + str(self.kernel.shape))
+        self.bias = self.add_weight(shape=(self.units,),
+                                        initializer=self.bias_initializer,
+                                        name='bias',
+                                        regularizer=self.bias_regularizer,
+                                        constraint=self.bias_constraint)
+
+        self.params = [self.bias]
         self.regularizers = []
-        if self.W_regularizer:
-            self.W_regularizer.set_param(self.W)
-            self.regularizers.append(self.W_regularizer)
+        if self.kernel_regularizer:
+            self.kernel_regularizer.set_param(self.kernel)
+            self.regularizers.append(self.kernel_regularizer)
 
-        if self.b_regularizer:
-            self.b_regularizer.set_param(self.b)
-            self.regularizers.append(self.b_regularizer)
+        if self.bias_regularizer:
+            self.bias_regularizer.set_param(self.bias)
+            self.regularizers.append(self.bias_regularizer)
 
         if self.activity_regularizer:
             self.activity_regularizer.set_layer(self)
