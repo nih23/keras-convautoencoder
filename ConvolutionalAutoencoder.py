@@ -21,7 +21,7 @@ def load_data():
 
 def build_model(nb_filters=32, nb_pool=2, nb_conv=2):
     model = models.Sequential()
-    d = Dense(30)
+    d = Dense(60)
     c = Convolution2D(nb_filters, nb_conv, nb_conv, border_mode='same', input_shape=(28, 28, 1))
     mp =MaxPooling2D(pool_size=(nb_pool, nb_pool))
     # =========      ENCODER     ========================
@@ -47,7 +47,7 @@ def build_model(nb_filters=32, nb_pool=2, nb_conv=2):
 
 if __name__ == '__main__':
     pModel = 'convae.h5'
-    noEpochs = 10
+    noEpochs = 1
     batchSz = 12000
     (X_train, y_train), (X_test, y_test) = load_data()
     X_train = np.swapaxes(X_train,1,3)
@@ -58,10 +58,12 @@ if __name__ == '__main__':
         model.summary()
         model.fit(X_train, X_train, epochs=noEpochs, batch_size=batchSz, validation_split=0.2,
                   callbacks=[EarlyStopping(patience=3)])
-        model.save(pModel, overwrite=True)
+        model.save_weights(pModel, overwrite=True)
+        #model.save(pModel, overwrite=True)
     else:
         #TODO: fix me.. broken
-        model = models.load_model(pModel, custom_objects={"DependentDense": DependentDense, "Deconvolution2D": Deconvolution2D, "DePool2D": DePool2D})
+        #model = models.load_model(pModel, custom_objects={"DependentDense": DependentDense, "Deconvolution2D": Deconvolution2D, "DePool2D": DePool2D})
+        model.load_weights(pModel)
         model.compile(optimizer='rmsprop', loss='mean_squared_error')
 
     show_representations(model, X_test)
